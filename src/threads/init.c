@@ -11,6 +11,8 @@
 #include <test-lib.h>
 #include "devices/kbd.h"
 #include "devices/input.h"
+#include "devices/pci.h"
+#include "devices/usb.h"
 #include "devices/serial.h"
 #include "devices/shutdown.h"
 #include "devices/timer.h"
@@ -62,6 +64,7 @@ static size_t user_page_limit = SIZE_MAX;
 
 static void bss_init(void);
 static void paging_init(void);
+static void pci_zone_init(void);
 
 static char** read_command_line(void);
 static char** parse_options(char** argv);
@@ -109,6 +112,7 @@ int main(void) {
   intr_init();
   timer_init();
   kbd_init();
+  pci_init();
   input_init();
 #ifdef USERPROG
   exception_init();
@@ -119,6 +123,7 @@ int main(void) {
   thread_start();
   serial_init_queue();
   timer_calibrate();
+  usb_init();
 
 #ifdef USERPROG
   /* Give main thread a minimal PCB so it can launch the first process */
@@ -128,6 +133,7 @@ int main(void) {
 #ifdef FILESYS
   /* Initialize file system. */
   ide_init();
+  usb_storage_init();
   locate_block_devices();
   filesys_init(format_filesys);
 #endif
@@ -179,12 +185,28 @@ static void paging_init(void) {
     pt[pte_idx] = pte_create_kernel(vaddr, !in_kernel_text);
   }
 
+  pci_zone_init();
+
   /* Store the physical address of the page directory into CR3
      aka PDBR (page directory base register).  This activates our
      new page tables immediately.  See [IA32-v2a] "MOV--Move
      to/from Control Registers" and [IA32-v3a] 3.7.5 "Base Address
      of the Page Directory". */
   asm volatile("movl %0, %%cr3" : : "r"(vtop(init_page_dir)));
+}
+
+/* Initialize PCI zone at PCI_ADDR_ZONE_BEGIN - PCI_ADDR_ZONE_END. */
+static void pci_zone_init(void) {
+  int i;
+  for (i = 0; i < PCI_ADDR_ZONE_PDES; i++) {
+    size_t pde_idx = pd_no((void*)PCI_ADDR_ZONE_BEGIN) + i;
+    uint32_t pde;
+    void* pt;
+
+    pt = palloc_get_page(PAL_ASSERT | PAL_ZERO);
+    pde = pde_create(pt);
+    init_page_dir[pde_idx] = pde;
+  }
 }
 
 /* Breaks the kernel command line into words and returns them as
